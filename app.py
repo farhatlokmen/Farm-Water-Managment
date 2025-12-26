@@ -220,21 +220,21 @@ def idw_interpolation(xi, yi, zi, grid_x, grid_y, power=2.5, k_neighbors=12):
     xi = np.asarray(xi, dtype=float)
     yi = np.asarray(yi, dtype=float)
     zi = np.asarray(zi, dtype=float)
-    
+
     valid_mask = np.isfinite(xi) & np.isfinite(yi) & np.isfinite(zi)
     xi = xi[valid_mask]
     yi = yi[valid_mask]
     zi = zi[valid_mask]
-    
+
     if len(xi) == 0:
         return np.zeros_like(grid_x)
 
     tree = cKDTree(np.c_[xi, yi])
     grid_points = np.c_[grid_x.ravel(), grid_y.ravel()]
-    
+
     if not np.all(np.isfinite(grid_points)):
         grid_points = np.nan_to_num(grid_points, nan=0.0, posinf=0.0, neginf=0.0)
-    
+
     k = min(k_neighbors, len(xi))
     distances, indices = tree.query(grid_points, k=k)
 
@@ -538,14 +538,18 @@ def create_interpolation_map(wells_df, ro_df, data_type='ec', classes=None, bord
 
     return m
 
-def create_geopandas_classification_map(wells_df, ro_df, data_type='ec', classes=None, border=None):
+def create_geopandas_classification_map(wells_df, ro_df, data_type='ec', classes=None, border=None, 
+                                         title=None, unit=None, external_data=None):
     """Create classification map using GeoPandas with user-defined ranges.
-    
+
     Returns tuple: (image_buffer or None, diagnostic_info dict)
+    
+    Args:
+        external_data: Optional dict with 'coords' (nx2 array) and 'values' (n array) for direct data input
     """
     all_coords = []
     all_values = []
-    
+
     diagnostics = {
         'wells_total': 0,
         'wells_valid_coords': 0,
@@ -558,77 +562,97 @@ def create_geopandas_classification_map(wells_df, ro_df, data_type='ec', classes
         'ro_valid_values': 0,
         'ro_used': 0,
         'ro_no_coords': [],
-        'ro_no_values': []
+        'ro_no_values': [],
+        'failure_reason': None
     }
 
-    if data_type == 'ec':
-        value_col_wells = 'well water salinity'
-        value_col_ro = 'ro water salinity'
-        title = 'EC (Salinity) Classification Map'
-        unit = 'EC'
+    if external_data is not None:
+        all_coords = external_data['coords'].tolist() if hasattr(external_data['coords'], 'tolist') else list(external_data['coords'])
+        all_values = external_data['values'].tolist() if hasattr(external_data['values'], 'tolist') else list(external_data['values'])
+        if title is None:
+            title = 'Distribution Map'
+        if unit is None:
+            unit = 'Value'
     else:
-        value_col_wells = 'well ph'
-        value_col_ro = 'ro ph'
-        title = 'pH Classification Map'
-        unit = 'pH'
+        if data_type == 'ec':
+            value_col_wells = 'well water salinity'
+            value_col_ro = 'ro water salinity'
+            if title is None:
+                title = 'EC (Salinity) Classification Map'
+            if unit is None:
+                unit = 'EC'
+        elif data_type == 'ph':
+            value_col_wells = 'well ph'
+            value_col_ro = 'ro ph'
+            if title is None:
+                title = 'pH Classification Map'
+            if unit is None:
+                unit = 'pH'
+        else:
+            value_col_wells = 'well water salinity'
+            value_col_ro = 'ro water salinity'
+            if title is None:
+                title = 'Distribution Map'
+            if unit is None:
+                unit = 'Value'
 
-    if wells_df is not None and len(wells_df) > 0:
-        diagnostics['wells_total'] = len(wells_df)
-        for _, row in wells_df.iterrows():
-            lat, lon = parse_coordinates(row.get('well google coordinates', ''))
-            val = pd.to_numeric(row.get(value_col_wells, np.nan), errors='coerce')
-            
-            has_valid_coords = lat is not None and lon is not None
-            has_valid_value = not pd.isna(val) and np.isfinite(val)
-            
-            if has_valid_coords:
-                diagnostics['wells_valid_coords'] += 1
-            else:
-                well_id = row.get('well number', 'Unknown')
-                farm_id = row.get('farm number', 'Unknown')
-                diagnostics['wells_no_coords'].append(f"Well {well_id} (Farm {farm_id})")
-            
-            if has_valid_value:
-                diagnostics['wells_valid_values'] += 1
-            else:
-                well_id = row.get('well number', 'Unknown')
-                farm_id = row.get('farm number', 'Unknown')
-                if has_valid_coords:
-                    diagnostics['wells_no_values'].append(f"Well {well_id} (Farm {farm_id})")
-            
-            if has_valid_coords and has_valid_value:
-                all_coords.append([lon, lat])
-                all_values.append(val)
-                diagnostics['wells_used'] += 1
+        if wells_df is not None and len(wells_df) > 0:
+            diagnostics['wells_total'] = len(wells_df)
+            for _, row in wells_df.iterrows():
+                lat, lon = parse_coordinates(row.get('well google coordinates', ''))
+                val = pd.to_numeric(row.get(value_col_wells, np.nan), errors='coerce')
 
-    if ro_df is not None and len(ro_df) > 0:
-        diagnostics['ro_total'] = len(ro_df)
-        for _, row in ro_df.iterrows():
-            lat, lon = parse_coordinates(row.get('ro google coordinates', ''))
-            val = pd.to_numeric(row.get(value_col_ro, np.nan), errors='coerce')
-            
-            has_valid_coords = lat is not None and lon is not None
-            has_valid_value = not pd.isna(val) and np.isfinite(val)
-            
-            if has_valid_coords:
-                diagnostics['ro_valid_coords'] += 1
-            else:
-                ro_id = row.get('ro number', 'Unknown')
-                farm_id = row.get('farm number', 'Unknown')
-                diagnostics['ro_no_coords'].append(f"RO {ro_id} (Farm {farm_id})")
-            
-            if has_valid_value:
-                diagnostics['ro_valid_values'] += 1
-            else:
-                ro_id = row.get('ro number', 'Unknown')
-                farm_id = row.get('farm number', 'Unknown')
+                has_valid_coords = lat is not None and lon is not None
+                has_valid_value = not pd.isna(val) and np.isfinite(val)
+
                 if has_valid_coords:
-                    diagnostics['ro_no_values'].append(f"RO {ro_id} (Farm {farm_id})")
-            
-            if has_valid_coords and has_valid_value:
-                all_coords.append([lon, lat])
-                all_values.append(val)
-                diagnostics['ro_used'] += 1
+                    diagnostics['wells_valid_coords'] += 1
+                else:
+                    well_id = row.get('well number', 'Unknown')
+                    farm_id = row.get('farm number', 'Unknown')
+                    diagnostics['wells_no_coords'].append(f"Well {well_id} (Farm {farm_id})")
+
+                if has_valid_value:
+                    diagnostics['wells_valid_values'] += 1
+                else:
+                    well_id = row.get('well number', 'Unknown')
+                    farm_id = row.get('farm number', 'Unknown')
+                    if has_valid_coords:
+                        diagnostics['wells_no_values'].append(f"Well {well_id} (Farm {farm_id})")
+
+                if has_valid_coords and has_valid_value:
+                    all_coords.append([lon, lat])
+                    all_values.append(val)
+                    diagnostics['wells_used'] += 1
+
+        if ro_df is not None and len(ro_df) > 0:
+            diagnostics['ro_total'] = len(ro_df)
+            for _, row in ro_df.iterrows():
+                lat, lon = parse_coordinates(row.get('ro google coordinates', ''))
+                val = pd.to_numeric(row.get(value_col_ro, np.nan), errors='coerce')
+
+                has_valid_coords = lat is not None and lon is not None
+                has_valid_value = not pd.isna(val) and np.isfinite(val)
+
+                if has_valid_coords:
+                    diagnostics['ro_valid_coords'] += 1
+                else:
+                    ro_id = row.get('ro number', 'Unknown')
+                    farm_id = row.get('farm number', 'Unknown')
+                    diagnostics['ro_no_coords'].append(f"RO {ro_id} (Farm {farm_id})")
+
+                if has_valid_value:
+                    diagnostics['ro_valid_values'] += 1
+                else:
+                    ro_id = row.get('ro number', 'Unknown')
+                    farm_id = row.get('farm number', 'Unknown')
+                    if has_valid_coords:
+                        diagnostics['ro_no_values'].append(f"RO {ro_id} (Farm {farm_id})")
+
+                if has_valid_coords and has_valid_value:
+                    all_coords.append([lon, lat])
+                    all_values.append(val)
+                    diagnostics['ro_used'] += 1
 
     if len(all_coords) < 3:
         diagnostics['failure_reason'] = f'Insufficient data points: {len(all_coords)} (need at least 3)'
@@ -639,14 +663,14 @@ def create_geopandas_classification_map(wells_df, ro_df, data_type='ec', classes
 
     current_border = border if border else get_current_border()
     border_poly = get_shapely_polygon(current_border)
-    
+
     if border_poly is None or border_poly.is_empty:
         diagnostics['failure_reason'] = 'Border polygon is None or empty'
         return None, diagnostics
-    
+
     bounds = border_poly.bounds
     lon_min, lat_min, lon_max, lat_max = bounds
-    
+
     if not all(np.isfinite([lon_min, lat_min, lon_max, lat_max])):
         diagnostics['failure_reason'] = f'Invalid bounds: {bounds}'
         return None, diagnostics
@@ -654,7 +678,7 @@ def create_geopandas_classification_map(wells_df, ro_df, data_type='ec', classes
     try:
         lon_pad = (lon_max - lon_min) * 0.05
         lat_pad = (lat_max - lat_min) * 0.05
-        
+
         if not np.isfinite(lon_pad) or not np.isfinite(lat_pad):
             lon_pad = 0.1
             lat_pad = 0.1
@@ -683,21 +707,24 @@ def create_geopandas_classification_map(wells_df, ro_df, data_type='ec', classes
 
         if classes and len(classes) > 0:
             n_classes = len(classes)
-            
+
             sorted_classes = sorted(classes, key=lambda x: x[0])
             thresholds = [c[0] for c in sorted_classes]
             class_labels = [c[1] for c in sorted_classes]
-            
+
             levels = [0] + thresholds
-            
+
             if data_type == 'ph':
                 ph_colors = ['#FF4500', '#FF8C00', '#FFA500', '#00AA00', '#9370DB', '#8A2BE2', '#4B0082']
                 base_colors = ph_colors
+            elif data_type == 'rainfall':
+                rainfall_colors = ['#E0F7FA', '#80DEEA', '#26C6DA', '#0097A7', '#00695C']
+                base_colors = rainfall_colors
             else:
                 base_colors = ['#0000FF', '#00FF00', '#FFFF00', '#FFA500', '#FF0000', '#800080', '#00FFFF', '#FF69B4', '#8B4513', '#2F4F4F']
-            
+
             colors_to_use = base_colors[:n_classes] if n_classes <= len(base_colors) else (base_colors * ((n_classes // len(base_colors)) + 1))[:n_classes]
-            
+
             cmap = mcolors.ListedColormap(colors_to_use)
             norm = mcolors.BoundaryNorm(levels, cmap.N)
         else:
@@ -818,7 +845,7 @@ def parse_coordinates(coord_str):
     """
     if pd.isna(coord_str) or coord_str == '' or coord_str is None:
         return None, None
-    
+
     coord_str_check = str(coord_str).strip().lower()
     if coord_str_check in ['nan', 'none', 'null', '']:
         return None, None
@@ -873,15 +900,15 @@ def validate_ro_data(df):
 
 def filter_rows_with_valid_coordinates(df, coord_column):
     """Filter dataframe to retain only rows with valid geographic coordinates.
-    
+
     Returns tuple: (filtered_df, skipped_rows_info)
     """
     if df is None or len(df) == 0:
         return df, []
-    
+
     valid_indices = []
     skipped_rows = []
-    
+
     for idx, row in df.iterrows():
         coord_str = row.get(coord_column, '')
         lat, lon = parse_coordinates(coord_str)
@@ -891,7 +918,7 @@ def filter_rows_with_valid_coordinates(df, coord_column):
             row_id = row.get('well number', row.get('ro number', idx))
             farm = row.get('farm number', 'Unknown')
             skipped_rows.append(f"Farm {farm}, ID {row_id}: '{coord_str}'")
-    
+
     filtered_df = df.loc[valid_indices].copy()
     return filtered_df, skipped_rows
 
@@ -957,7 +984,7 @@ def create_map(wells_df=None, ro_df=None, show_wells=True, show_ro=True):
     ).add_to(m)
 
     used_coords = set()
-    
+
     if wells_df is not None and show_wells:
         for _, row in wells_df.iterrows():
             lat, lon = parse_coordinates(row.get('well google coordinates', ''))
@@ -969,7 +996,7 @@ def create_map(wells_df=None, ro_df=None, show_wells=True, show_ro=True):
                     coord_key = (round(lat + offset, 6), round(lon + offset, 6))
                 used_coords.add(coord_key)
                 display_lat, display_lon = coord_key
-                
+
                 status = str(row.get('well status', '')).lower()
                 is_active = status in ['active', 'yes', '1', 'true']
                 color = 'green' if is_active else 'red'
@@ -1004,7 +1031,7 @@ def create_map(wells_df=None, ro_df=None, show_wells=True, show_ro=True):
                     coord_key = (round(lat + offset, 6), round(lon + offset, 6))
                 used_coords.add(coord_key)
                 display_lat, display_lon = coord_key
-                
+
                 status = str(row.get('ro status', '')).lower()
                 is_active = status in ['active', 'yes', '1', 'true']
                 color = 'blue' if is_active else 'orange'
@@ -1282,7 +1309,7 @@ def get_unique_supply_types(wells_df):
 
 def filter_wells_by_supply(wells_df, selected_supplies):
     """Filter wells by selected supply types, handling comma-separated values per cell.
-    
+
     Rows with empty/null supply values are always included to avoid dropping inactive wells.
     """
     if wells_df is None or len(wells_df) == 0 or not selected_supplies:
@@ -1307,7 +1334,7 @@ def sanitize_text_for_pdf(text):
 def create_matplotlib_status_chart(wells_df, ro_df):
     """Create status distribution chart using matplotlib."""
     data = {'Type': [], 'Active': [], 'Inactive': []}
-    
+
     if wells_df is not None and len(wells_df) > 0:
         status_col = wells_df['well status'].astype(str).str.lower()
         active = status_col.isin(['active', 'yes', '1', 'true']).sum()
@@ -1315,7 +1342,7 @@ def create_matplotlib_status_chart(wells_df, ro_df):
         data['Type'].append('Wells')
         data['Active'].append(active)
         data['Inactive'].append(inactive)
-    
+
     if ro_df is not None and len(ro_df) > 0:
         status_col = ro_df['ro status'].astype(str).str.lower()
         active = status_col.isin(['active', 'yes', '1', 'true']).sum()
@@ -1323,29 +1350,29 @@ def create_matplotlib_status_chart(wells_df, ro_df):
         data['Type'].append('RO Units')
         data['Active'].append(active)
         data['Inactive'].append(inactive)
-    
+
     if not data['Type']:
         return None
-    
+
     fig, ax = plt.subplots(figsize=(8, 5))
     x = np.arange(len(data['Type']))
     width = 0.35
-    
+
     bars1 = ax.bar(x - width/2, data['Active'], width, label='Active', color='#00E676')
     bars2 = ax.bar(x + width/2, data['Inactive'], width, label='Inactive', color='#FF1744')
-    
+
     ax.set_xlabel('Type')
     ax.set_ylabel('Count')
     ax.set_title('Count Active Vs Inactive Wells/RO Units')
     ax.set_xticks(x)
     ax.set_xticklabels(data['Type'])
     ax.legend()
-    
+
     for bar in bars1:
         ax.text(bar.get_x() + bar.get_width()/2., bar.get_height(), f'{int(bar.get_height())}', ha='center', va='bottom')
     for bar in bars2:
         ax.text(bar.get_x() + bar.get_width()/2., bar.get_height(), f'{int(bar.get_height())}', ha='center', va='bottom')
-    
+
     buf = io.BytesIO()
     plt.savefig(buf, format='png', dpi=150, bbox_inches='tight', facecolor='white')
     buf.seek(0)
@@ -1356,7 +1383,7 @@ def create_matplotlib_supply_chart(wells_df):
     """Create supply distribution pie chart using matplotlib."""
     if wells_df is None or len(wells_df) == 0:
         return None
-    
+
     supply_counts = {}
     for val in wells_df['well supplies to'].dropna():
         val_str = str(val).strip()
@@ -1365,12 +1392,12 @@ def create_matplotlib_supply_chart(wells_df):
             cleaned = part.strip()
             if cleaned:
                 supply_counts[cleaned] = supply_counts.get(cleaned, 0) + 1
-    
+
     if not supply_counts:
         return None
-    
+
     colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#96CEB4', '#FFEAA7', '#DDA0DD', '#98D8C8', '#F7DC6F']
-    
+
     fig, ax = plt.subplots(figsize=(8, 5))
     wedges, texts, autotexts = ax.pie(
         list(supply_counts.values()), 
@@ -1380,7 +1407,7 @@ def create_matplotlib_supply_chart(wells_df):
         wedgeprops=dict(width=0.7, edgecolor='white')
     )
     ax.set_title('Water Distribution (Count)')
-    
+
     buf = io.BytesIO()
     plt.savefig(buf, format='png', dpi=150, bbox_inches='tight', facecolor='white')
     buf.seek(0)
@@ -1397,7 +1424,7 @@ def create_matplotlib_ec_chart(wells_df, ro_df, ec_classes=None):
             (3000.0, "Very High (2000-3000)"),
             (6000.0, "Extreme (> 3000)")
         ]
-    
+
     all_salinity = []
     if wells_df is not None and len(wells_df) > 0:
         salinity = pd.to_numeric(wells_df['well water salinity'], errors='coerce').dropna()
@@ -1405,35 +1432,35 @@ def create_matplotlib_ec_chart(wells_df, ro_df, ec_classes=None):
     if ro_df is not None and len(ro_df) > 0:
         salinity = pd.to_numeric(ro_df['ro water salinity'], errors='coerce').dropna()
         all_salinity.extend(salinity.tolist())
-    
+
     if not all_salinity:
         return None
-    
+
     class_counts = {}
     for val in all_salinity:
         for i, (threshold, label) in enumerate(ec_classes):
             if val <= threshold:
                 class_counts[label] = class_counts.get(label, 0) + 1
                 break
-    
+
     if not class_counts:
         return None
-    
+
     colors = ['#00E5FF', '#00E676', '#FFEA00', '#FF9100', '#FF1744']
     labels = [c[1] for c in ec_classes if c[1] in class_counts]
     values = [class_counts.get(c[1], 0) for c in ec_classes if c[1] in class_counts]
     bar_colors = [colors[i] for i, c in enumerate(ec_classes) if c[1] in class_counts]
-    
+
     fig, ax = plt.subplots(figsize=(8, 5))
     bars = ax.bar(labels, values, color=bar_colors)
     ax.set_xlabel('EC Class')
     ax.set_ylabel('Count')
     ax.set_title('Well EC Class Distribution')
     plt.xticks(rotation=45, ha='right')
-    
+
     for bar in bars:
         ax.text(bar.get_x() + bar.get_width()/2., bar.get_height(), f'{int(bar.get_height())}', ha='center', va='bottom')
-    
+
     buf = io.BytesIO()
     plt.savefig(buf, format='png', dpi=150, bbox_inches='tight', facecolor='white')
     buf.seek(0)
@@ -1450,7 +1477,7 @@ def create_matplotlib_ph_chart(wells_df, ro_df, ph_classes=None):
             (8.5, "Alkaline (8.0-8.5)"),
             (14.0, "Highly Alkaline (> 8.5)")
         ]
-    
+
     all_ph = []
     if wells_df is not None and len(wells_df) > 0:
         ph = pd.to_numeric(wells_df['well ph'], errors='coerce').dropna()
@@ -1458,35 +1485,35 @@ def create_matplotlib_ph_chart(wells_df, ro_df, ph_classes=None):
     if ro_df is not None and len(ro_df) > 0:
         ph = pd.to_numeric(ro_df['ro ph'], errors='coerce').dropna()
         all_ph.extend(ph.tolist())
-    
+
     if not all_ph:
         return None
-    
+
     class_counts = {}
     for val in all_ph:
         for i, (threshold, label) in enumerate(ph_classes):
             if val <= threshold:
                 class_counts[label] = class_counts.get(label, 0) + 1
                 break
-    
+
     if not class_counts:
         return None
-    
+
     colors = ['#FF6B6B', '#4ECDC4', '#45B7D1', '#9B59B6', '#E74C3C']
     labels = [c[1] for c in ph_classes if c[1] in class_counts]
     values = [class_counts.get(c[1], 0) for c in ph_classes if c[1] in class_counts]
     bar_colors = [colors[i] for i, c in enumerate(ph_classes) if c[1] in class_counts]
-    
+
     fig, ax = plt.subplots(figsize=(8, 5))
     bars = ax.bar(labels, values, color=bar_colors)
     ax.set_xlabel('pH Class')
     ax.set_ylabel('Count')
     ax.set_title('Well pH Class Distribution')
     plt.xticks(rotation=45, ha='right')
-    
+
     for bar in bars:
         ax.text(bar.get_x() + bar.get_width()/2., bar.get_height(), f'{int(bar.get_height())}', ha='center', va='bottom')
-    
+
     buf = io.BytesIO()
     plt.savefig(buf, format='png', dpi=150, bbox_inches='tight', facecolor='white')
     buf.seek(0)
@@ -1506,7 +1533,7 @@ def generate_pdf_report(wells_df, ro_df, options=None, ec_classes=None, ph_class
             'ec_map': False,
             'ph_map': False
         }
-    
+
     total_farms = set()
     total_wells = 0
     active_wells = 0
@@ -1515,7 +1542,7 @@ def generate_pdf_report(wells_df, ro_df, options=None, ec_classes=None, ph_class
     active_ro = 0
     inactive_ro = 0
     wells_salinity_avg = wells_ph_avg = ro_salinity_avg = ro_ph_avg = None
-    
+
     if wells_df is not None and len(wells_df) > 0:
         total_wells = len(wells_df)
         if 'farm number' in wells_df.columns:
@@ -1529,7 +1556,7 @@ def generate_pdf_report(wells_df, ro_df, options=None, ec_classes=None, ph_class
         ph = pd.to_numeric(wells_df['well ph'], errors='coerce').dropna()
         if len(ph) > 0:
             wells_ph_avg = ph.mean()
-    
+
     if ro_df is not None and len(ro_df) > 0:
         total_ro = len(ro_df)
         if 'farm number' in ro_df.columns:
@@ -1643,7 +1670,7 @@ def generate_pdf_report(wells_df, ro_df, options=None, ec_classes=None, ph_class
     <body>
         <h1>Farm Water Management Report</h1>
         <p class="subtitle">Generated Report with Statistical Analysis</p>
-        
+
         <h2>Summary Statistics</h2>
         <div class="summary-grid">
             <div class="summary-card">
@@ -1661,7 +1688,7 @@ def generate_pdf_report(wells_df, ro_df, options=None, ec_classes=None, ph_class
                 <div class="detail">{active_ro} Active / {inactive_ro} Inactive</div>
             </div>
         </div>
-        
+
         <table>
             <tr><th>Metric</th><th>Wells</th><th>RO Units</th></tr>
             <tr><td>Average EC (Salinity)</td><td>{f"{wells_salinity_avg:.2f}" if wells_salinity_avg else "N/A"}</td><td>{f"{ro_salinity_avg:.2f}" if ro_salinity_avg else "N/A"}</td></tr>
@@ -1951,7 +1978,7 @@ def main():
 
     st.divider()
 
-    tabs = st.tabs(["View Locations", "EC/pH (Wells)", "Statistics", "Data Preview"])
+    tabs = st.tabs(["View Locations", "EC/pH (Wells)", "Statistics", "Rainfall Events", "Data Preview"])
 
     with tabs[0]:
         st.subheader("Interactive Map")
@@ -2082,15 +2109,15 @@ def main():
             if st.session_state.ec_classes_saved and st.session_state.ph_classes_saved and (st.session_state.wells_df_raw is not None or st.session_state.ro_df_raw is not None):
                 wells_df_for_maps = st.session_state.wells_df_raw.copy() if st.session_state.wells_df_raw is not None else None
                 ro_df_for_maps = st.session_state.ro_df_raw.copy() if st.session_state.ro_df_raw is not None else None
-                
+
                 if wells_df_for_maps is not None and selected_farms:
                     wells_df_for_maps = wells_df_for_maps[wells_df_for_maps['farm number'].astype(str).isin(selected_farms)]
                     if selected_supplies:
                         wells_df_for_maps = filter_wells_by_supply(wells_df_for_maps, selected_supplies)
-                
+
                 if ro_df_for_maps is not None and selected_farms:
                     ro_df_for_maps = ro_df_for_maps[ro_df_for_maps['farm number'].astype(str).isin(selected_farms)]
-                
+
                 map_col1, map_col2 = st.columns(2)
 
                 with map_col1:
@@ -2191,6 +2218,251 @@ def main():
                 st.metric("Average Active RO Units per Farm", f"{int(round(avg_ro))}")
 
     with tabs[3]:
+        st.subheader("Rainfall Events Analysis")
+        st.caption("Upload rainfall data to analyze precipitation patterns across farms")
+        
+        if 'rainfall_df' not in st.session_state:
+            st.session_state.rainfall_df = None
+        if 'rainfall_selected_day' not in st.session_state:
+            st.session_state.rainfall_selected_day = None
+        if 'rainfall_map_buffer' not in st.session_state:
+            st.session_state.rainfall_map_buffer = None
+        
+        rainfall_file = st.file_uploader(
+            "Upload Rainfall Excel File",
+            type=['xlsx', 'xls'],
+            key="rainfall_uploader",
+            help="Excel file with columns: date time, lat, lon, rainfall"
+        )
+        
+        if rainfall_file:
+            try:
+                rainfall_raw = pd.read_excel(rainfall_file)
+                rainfall_raw.columns = rainfall_raw.columns.str.strip().str.lower()
+                
+                required_cols = ['date time', 'lat', 'lon', 'rainfall']
+                col_mapping = {}
+                for req in required_cols:
+                    for col in rainfall_raw.columns:
+                        if req.replace(' ', '') in col.replace(' ', '').replace('_', ''):
+                            col_mapping[col] = req
+                            break
+                
+                if len(col_mapping) == len(required_cols):
+                    rainfall_raw = rainfall_raw.rename(columns=col_mapping)
+                    
+                    rainfall_raw['date time'] = pd.to_datetime(rainfall_raw['date time'], errors='coerce')
+                    rainfall_raw['lat'] = pd.to_numeric(rainfall_raw['lat'], errors='coerce')
+                    rainfall_raw['lon'] = pd.to_numeric(rainfall_raw['lon'], errors='coerce')
+                    rainfall_raw['rainfall'] = pd.to_numeric(rainfall_raw['rainfall'], errors='coerce')
+                    
+                    rainfall_clean = rainfall_raw.dropna(subset=['date time', 'lat', 'lon', 'rainfall'])
+                    rainfall_clean['date'] = rainfall_clean['date time'].dt.date
+                    
+                    st.session_state.rainfall_df = rainfall_clean
+                    st.success(f"Loaded {len(rainfall_clean)} rainfall records from {rainfall_clean['date'].nunique()} days")
+                else:
+                    missing = [r for r in required_cols if r not in col_mapping.values()]
+                    st.error(f"Missing required columns: {', '.join(missing)}")
+                    st.info("Required columns: date time, lat, lon, rainfall")
+            except Exception as e:
+                st.error(f"Error reading file: {str(e)}")
+        
+        rainfall_df = st.session_state.rainfall_df
+        
+        if rainfall_df is not None and len(rainfall_df) > 0:
+            st.divider()
+            st.markdown("### Rainfall Statistics (Qatar)")
+            
+            num_sample_points = rainfall_df.groupby(['lat', 'lon']).ngroups
+            num_days = rainfall_df['date'].nunique()
+            
+            daily_per_point = rainfall_df.groupby(['lat', 'lon', 'date'])['rainfall'].sum()
+            max_daily_rainfall = daily_per_point.max()
+            avg_daily_rainfall = daily_per_point.mean()
+            
+            stat_col1, stat_col2, stat_col3, stat_col4 = st.columns(4)
+            with stat_col1:
+                st.metric("Sample Points", num_sample_points)
+            with stat_col2:
+                st.metric("No. of Days", num_days)
+            with stat_col3:
+                st.metric("Max Daily Rainfall (mm)", f"{max_daily_rainfall:.1f}")
+            with stat_col4:
+                st.metric("Avg Daily Rainfall (mm)", f"{avg_daily_rainfall:.2f}")
+            
+            farm_locations = {}
+            if wells_df is not None and len(wells_df) > 0:
+                for _, row in wells_df.iterrows():
+                    farm_id = str(row.get('farm number', ''))
+                    if farm_id and farm_id != 'nan':
+                        lat, lon = parse_coordinates(row.get('well google coordinates', ''))
+                        if lat is not None and lon is not None:
+                            if farm_id not in farm_locations:
+                                farm_locations[farm_id] = {'lats': [], 'lons': []}
+                            farm_locations[farm_id]['lats'].append(lat)
+                            farm_locations[farm_id]['lons'].append(lon)
+            
+            if ro_df is not None and len(ro_df) > 0:
+                for _, row in ro_df.iterrows():
+                    farm_id = str(row.get('farm number', ''))
+                    if farm_id and farm_id != 'nan':
+                        lat, lon = parse_coordinates(row.get('ro google coordinates', ''))
+                        if lat is not None and lon is not None:
+                            if farm_id not in farm_locations:
+                                farm_locations[farm_id] = {'lats': [], 'lons': []}
+                            farm_locations[farm_id]['lats'].append(lat)
+                            farm_locations[farm_id]['lons'].append(lon)
+            
+            if farm_locations:
+                farm_centroids = {}
+                for farm_id, coords_data in farm_locations.items():
+                    farm_centroids[farm_id] = {
+                        'lat': np.mean(coords_data['lats']),
+                        'lon': np.mean(coords_data['lons'])
+                    }
+                
+                st.session_state.farm_centroids_rainfall = farm_centroids
+                
+                st.divider()
+                st.markdown("### Farm Rainfall Time Series")
+                
+                farm_ids = sorted(farm_centroids.keys())
+                selected_farms = st.multiselect(
+                    "Select Farms",
+                    farm_ids,
+                    default=farm_ids[:3] if len(farm_ids) >= 3 else farm_ids,
+                    key="rainfall_farm_select"
+                )
+                
+                if selected_farms:
+                    time_series_data = []
+                    
+                    for _, obs_row in rainfall_df.iterrows():
+                        obs_lat = obs_row['lat']
+                        obs_lon = obs_row['lon']
+                        obs_rainfall = obs_row['rainfall']
+                        obs_datetime = obs_row['date time']
+                        
+                        for farm_id in selected_farms:
+                            if farm_id in farm_centroids:
+                                centroid = farm_centroids[farm_id]
+                                distance = np.sqrt((obs_lon - centroid['lon'])**2 + 
+                                                   (obs_lat - centroid['lat'])**2)
+                                
+                                weight = 1 / (distance + 0.0001)**2
+                                
+                                time_series_data.append({
+                                    'DateTime': obs_datetime,
+                                    'Farm': farm_id,
+                                    'Rainfall (mm)': obs_rainfall,
+                                    'Weight': weight
+                                })
+                    
+                    if time_series_data:
+                        ts_df = pd.DataFrame(time_series_data)
+                        
+                        def weighted_avg(group):
+                            return np.sum(group['Rainfall (mm)'] * group['Weight']) / np.sum(group['Weight'])
+                        
+                        ts_agg = ts_df.groupby(['DateTime', 'Farm']).apply(weighted_avg).reset_index(name='Rainfall (mm)')
+                        
+                        plt.style.use('seaborn-v0_8-whitegrid')
+                        fig, ax = plt.subplots(figsize=(14, 6), dpi=120)
+                        
+                        colors = ['#2E86AB', '#A23B72', '#F18F01', '#C73E1D', '#3B1F2B', 
+                                  '#6B4226', '#1B998B', '#FF6B6B', '#4ECDC4', '#45B7D1']
+                        
+                        for idx, farm_id in enumerate(selected_farms):
+                            farm_data = ts_agg[ts_agg['Farm'] == farm_id].sort_values('DateTime')
+                            color = colors[idx % len(colors)]
+                            ax.plot(farm_data['DateTime'], farm_data['Rainfall (mm)'], 
+                                   marker='o', label=f'Farm {farm_id}', linewidth=2.5, 
+                                   markersize=6, alpha=0.85, color=color,
+                                   markeredgecolor='white', markeredgewidth=0.5)
+                        
+                        ax.set_xlabel('Date/Time', fontsize=12, fontweight='medium', labelpad=10)
+                        ax.set_ylabel('Rainfall (mm)', fontsize=12, fontweight='medium', labelpad=10)
+                        ax.set_title('Farm Rainfall Time Series', fontsize=14, fontweight='bold', pad=15)
+                        
+                        ax.legend(loc='upper right', frameon=True, fancybox=True, 
+                                 shadow=True, fontsize=10, framealpha=0.95)
+                        
+                        ax.grid(True, alpha=0.4, linestyle='--', linewidth=0.7)
+                        ax.set_facecolor('#FAFAFA')
+                        fig.patch.set_facecolor('white')
+                        
+                        ax.spines['top'].set_visible(False)
+                        ax.spines['right'].set_visible(False)
+                        ax.spines['left'].set_linewidth(1.2)
+                        ax.spines['bottom'].set_linewidth(1.2)
+                        
+                        plt.xticks(rotation=45, ha='right', fontsize=10)
+                        plt.yticks(fontsize=10)
+                        plt.tight_layout()
+                        
+                        st.pyplot(fig)
+                        plt.close(fig)
+                        plt.style.use('default')
+            
+            st.divider()
+            st.markdown("### Daily Rainfall Analysis")
+            
+            available_dates = sorted(rainfall_df['date'].unique())
+            date_options = [d.strftime('%Y-%m-%d') for d in available_dates]
+            
+            selected_date_str = st.selectbox(
+                "Select Day",
+                date_options,
+                key="rainfall_day_select"
+            )
+            
+            if selected_date_str:
+                from datetime import datetime
+                selected_date = datetime.strptime(selected_date_str, '%Y-%m-%d').date()
+                st.session_state.rainfall_selected_day = selected_date
+                
+                day_data = rainfall_df[rainfall_df['date'] == selected_date]
+                daily_by_location = day_data.groupby(['lat', 'lon']).agg({'rainfall': 'sum'}).reset_index()
+                
+                if len(daily_by_location) >= 3:
+                    rainfall_classes = [
+                        (5, "Light (< 5 mm)"),
+                        (15, "Moderate (5-15 mm)"),
+                        (30, "Heavy (15-30 mm)"),
+                        (50, "Very Heavy (30-50 mm)"),
+                        (200, "Extreme (> 50 mm)")
+                    ]
+                    
+                    current_border = st.session_state.get('custom_border', None)
+                    
+                    coords = daily_by_location[['lon', 'lat']].values
+                    values = daily_by_location['rainfall'].values
+                    
+                    with st.spinner("Generating rainfall map..."):
+                        rainfall_map_buf, diagnostics = create_geopandas_classification_map(
+                            None, None, 
+                            data_type='rainfall',
+                            classes=rainfall_classes,
+                            title=f"Rainfall Distribution - {selected_date_str}",
+                            unit="Rainfall (mm)",
+                            border=current_border,
+                            external_data={'coords': coords, 'values': values}
+                        )
+                    
+                    if rainfall_map_buf:
+                        st.session_state.rainfall_map_buffer = rainfall_map_buf
+                        st.image(rainfall_map_buf, caption=f"Rainfall Distribution - {selected_date_str}", use_container_width=True)
+                    else:
+                        st.warning("Could not generate rainfall map. Need at least 3 data points within the border.")
+                        if diagnostics.get('failure_reason'):
+                            st.caption(f"Reason: {diagnostics['failure_reason']}")
+                else:
+                    st.warning("Need at least 3 rainfall locations to generate interpolated map.")
+        else:
+            st.info("Upload a rainfall Excel file to begin analysis.")
+
+    with tabs[4]:
         st.subheader("Data Preview")
 
         if wells_df is not None and len(wells_df) > 0:
@@ -2200,6 +2472,83 @@ def main():
         if ro_df is not None and len(ro_df) > 0:
             st.markdown("### RO Units Data")
             st.dataframe(ro_df, use_container_width=True)
+        
+        rainfall_df = st.session_state.get('rainfall_df', None)
+        if rainfall_df is not None and len(rainfall_df) > 0:
+            st.divider()
+            st.markdown("### Farm Rainfall Summary")
+            
+            farm_centroids = st.session_state.get('farm_centroids_rainfall', None)
+            
+            if farm_centroids is None:
+                farm_locations = {}
+                if wells_df is not None and len(wells_df) > 0:
+                    for _, row in wells_df.iterrows():
+                        farm_id = str(row.get('farm number', ''))
+                        if farm_id and farm_id != 'nan':
+                            lat, lon = parse_coordinates(row.get('well google coordinates', ''))
+                            if lat is not None and lon is not None:
+                                if farm_id not in farm_locations:
+                                    farm_locations[farm_id] = {'lats': [], 'lons': []}
+                                farm_locations[farm_id]['lats'].append(lat)
+                                farm_locations[farm_id]['lons'].append(lon)
+                
+                if ro_df is not None and len(ro_df) > 0:
+                    for _, row in ro_df.iterrows():
+                        farm_id = str(row.get('farm number', ''))
+                        if farm_id and farm_id != 'nan':
+                            lat, lon = parse_coordinates(row.get('ro google coordinates', ''))
+                            if lat is not None and lon is not None:
+                                if farm_id not in farm_locations:
+                                    farm_locations[farm_id] = {'lats': [], 'lons': []}
+                                farm_locations[farm_id]['lats'].append(lat)
+                                farm_locations[farm_id]['lons'].append(lon)
+                
+                if farm_locations:
+                    farm_centroids = {}
+                    for farm_id, coords_data in farm_locations.items():
+                        farm_centroids[farm_id] = {
+                            'lat': np.mean(coords_data['lats']),
+                            'lon': np.mean(coords_data['lons'])
+                        }
+            
+            if farm_centroids:
+                available_dates = sorted(rainfall_df['date'].unique())
+                farm_daily_rainfall = []
+                
+                for farm_id, centroid in farm_centroids.items():
+                    farm_row = {'Farm Number': farm_id}
+                    
+                    for date in available_dates:
+                        day_data = rainfall_df[rainfall_df['date'] == date]
+                        daily_by_loc = day_data.groupby(['lat', 'lon']).agg({'rainfall': 'sum'}).reset_index()
+                        rain_coords = daily_by_loc[['lon', 'lat']].values
+                        rain_values = daily_by_loc['rainfall'].values
+                        
+                        if len(rain_coords) > 0:
+                            distances = np.sqrt((rain_coords[:, 0] - centroid['lon'])**2 + 
+                                               (rain_coords[:, 1] - centroid['lat'])**2)
+                            
+                            if len(distances) >= 3:
+                                weights = 1 / (distances + 0.0001)**2
+                                interpolated_rainfall = np.sum(weights * rain_values) / np.sum(weights)
+                            else:
+                                interpolated_rainfall = rain_values[np.argmin(distances)]
+                            
+                            date_str = date.strftime('%Y-%m-%d')
+                            farm_row[date_str] = round(interpolated_rainfall, 2)
+                        else:
+                            date_str = date.strftime('%Y-%m-%d')
+                            farm_row[date_str] = 0.0
+                    
+                    farm_daily_rainfall.append(farm_row)
+                
+                if farm_daily_rainfall:
+                    farm_rain_df = pd.DataFrame(farm_daily_rainfall)
+                    farm_rain_df = farm_rain_df.sort_values('Farm Number')
+                    st.dataframe(farm_rain_df, use_container_width=True, hide_index=True)
+            else:
+                st.info("Upload wells/RO data to see farm-level rainfall data.")
 
 
 if __name__ == "__main__":
