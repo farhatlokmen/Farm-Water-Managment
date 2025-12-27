@@ -249,6 +249,46 @@ def idw_interpolation(xi, yi, zi, grid_x, grid_y, power=2.5, k_neighbors=12):
     zi_grid = np.sum(weights * zi[indices], axis=1)
     return zi_grid.reshape(grid_x.shape)
 
+def rbf_interpolation(xi, yi, zi, grid_x, grid_y, smooth=0.1):
+    """Radial Basis Function interpolation for smooth, natural-looking maps.
+    
+    Args:
+        xi, yi: Data point coordinates
+        zi: Data point values
+        grid_x, grid_y: Grid coordinates for interpolation
+        smooth: Smoothing factor (higher = smoother but less accurate)
+    """
+    from scipy.interpolate import RBFInterpolator
+    from scipy.ndimage import gaussian_filter
+    
+    if len(xi) == 0:
+        return np.zeros_like(grid_x)
+    
+    xi = np.asarray(xi, dtype=float)
+    yi = np.asarray(yi, dtype=float)
+    zi = np.asarray(zi, dtype=float)
+    
+    valid_mask = np.isfinite(xi) & np.isfinite(yi) & np.isfinite(zi)
+    xi = xi[valid_mask]
+    yi = yi[valid_mask]
+    zi = zi[valid_mask]
+    
+    if len(xi) < 3:
+        return np.zeros_like(grid_x)
+    
+    try:
+        points = np.column_stack([xi, yi])
+        rbf = RBFInterpolator(points, zi, kernel='thin_plate_spline', smoothing=smooth)
+        
+        grid_points = np.column_stack([grid_x.ravel(), grid_y.ravel()])
+        zi_grid = rbf(grid_points).reshape(grid_x.shape)
+        
+        zi_grid = gaussian_filter(zi_grid, sigma=1.5)
+        
+        return zi_grid
+    except Exception:
+        return idw_interpolation(xi, yi, zi, grid_x, grid_y, power=2.0, k_neighbors=min(15, len(xi)))
+
 def create_interpolation_map_pydeck(wells_df, ro_df, data_type='ec', classes=None, border=None):
     """Create WebGL-accelerated interpolation map using PyDeck for EC or pH values."""
     all_coords = []
@@ -543,7 +583,7 @@ def create_geopandas_classification_map(wells_df, ro_df, data_type='ec', classes
     """Create classification map using GeoPandas with user-defined ranges.
 
     Returns tuple: (image_buffer or None, diagnostic_info dict)
-    
+
     Args:
         external_data: Optional dict with 'coords' (nx2 array) and 'values' (n array) for direct data input
     """
@@ -683,13 +723,12 @@ def create_geopandas_classification_map(wells_df, ro_df, data_type='ec', classes
             lon_pad = 0.1
             lat_pad = 0.1
 
-        resolution = 150
+        resolution = 250
         grid_lon = np.linspace(lon_min - lon_pad, lon_max + lon_pad, resolution)
         grid_lat = np.linspace(lat_min - lat_pad, lat_max + lat_pad, resolution)
         grid_x, grid_y = np.meshgrid(grid_lon, grid_lat)
 
-        k_neighbors = min(12, len(values))
-        zi_grid = idw_interpolation(coords[:, 0], coords[:, 1], values, grid_x, grid_y, power=2.5, k_neighbors=k_neighbors)
+        zi_grid = rbf_interpolation(coords[:, 0], coords[:, 1], values, grid_x, grid_y, smooth=0.05)
 
         mask = np.zeros_like(zi_grid, dtype=bool)
         for i in range(resolution):
@@ -2220,26 +2259,26 @@ def main():
     with tabs[3]:
         st.subheader("Rainfall Events Analysis")
         st.caption("Upload rainfall data to analyze precipitation patterns across farms")
-        
+
         if 'rainfall_df' not in st.session_state:
             st.session_state.rainfall_df = None
         if 'rainfall_selected_day' not in st.session_state:
             st.session_state.rainfall_selected_day = None
         if 'rainfall_map_buffer' not in st.session_state:
             st.session_state.rainfall_map_buffer = None
-        
+
         rainfall_file = st.file_uploader(
             "Upload Rainfall Excel File",
             type=['xlsx', 'xls'],
             key="rainfall_uploader",
             help="Excel file with columns: date time, lat, lon, rainfall"
         )
-        
+
         if rainfall_file:
             try:
                 rainfall_raw = pd.read_excel(rainfall_file)
                 rainfall_raw.columns = rainfall_raw.columns.str.strip().str.lower()
-                
+
                 required_cols = ['date time', 'lat', 'lon', 'rainfall']
                 col_mapping = {}
                 for req in required_cols:
@@ -2247,18 +2286,18 @@ def main():
                         if req.replace(' ', '') in col.replace(' ', '').replace('_', ''):
                             col_mapping[col] = req
                             break
-                
+
                 if len(col_mapping) == len(required_cols):
                     rainfall_raw = rainfall_raw.rename(columns=col_mapping)
-                    
+
                     rainfall_raw['date time'] = pd.to_datetime(rainfall_raw['date time'], errors='coerce')
                     rainfall_raw['lat'] = pd.to_numeric(rainfall_raw['lat'], errors='coerce')
                     rainfall_raw['lon'] = pd.to_numeric(rainfall_raw['lon'], errors='coerce')
                     rainfall_raw['rainfall'] = pd.to_numeric(rainfall_raw['rainfall'], errors='coerce')
-                    
+
                     rainfall_clean = rainfall_raw.dropna(subset=['date time', 'lat', 'lon', 'rainfall'])
                     rainfall_clean['date'] = rainfall_clean['date time'].dt.date
-                    
+
                     st.session_state.rainfall_df = rainfall_clean
                     st.success(f"Loaded {len(rainfall_clean)} rainfall records from {rainfall_clean['date'].nunique()} days")
                 else:
@@ -2267,20 +2306,20 @@ def main():
                     st.info("Required columns: date time, lat, lon, rainfall")
             except Exception as e:
                 st.error(f"Error reading file: {str(e)}")
-        
+
         rainfall_df = st.session_state.rainfall_df
-        
+
         if rainfall_df is not None and len(rainfall_df) > 0:
             st.divider()
             st.markdown("### Rainfall Statistics (Qatar)")
-            
+
             num_sample_points = rainfall_df.groupby(['lat', 'lon']).ngroups
             num_days = rainfall_df['date'].nunique()
-            
+
             daily_per_point = rainfall_df.groupby(['lat', 'lon', 'date'])['rainfall'].sum()
             max_daily_rainfall = daily_per_point.max()
             avg_daily_rainfall = daily_per_point.mean()
-            
+
             stat_col1, stat_col2, stat_col3, stat_col4 = st.columns(4)
             with stat_col1:
                 st.metric("Sample Points", num_sample_points)
@@ -2290,7 +2329,7 @@ def main():
                 st.metric("Max Daily Rainfall (mm)", f"{max_daily_rainfall:.1f}")
             with stat_col4:
                 st.metric("Avg Daily Rainfall (mm)", f"{avg_daily_rainfall:.2f}")
-            
+
             farm_locations = {}
             if wells_df is not None and len(wells_df) > 0:
                 for _, row in wells_df.iterrows():
@@ -2302,7 +2341,7 @@ def main():
                                 farm_locations[farm_id] = {'lats': [], 'lons': []}
                             farm_locations[farm_id]['lats'].append(lat)
                             farm_locations[farm_id]['lons'].append(lon)
-            
+
             if ro_df is not None and len(ro_df) > 0:
                 for _, row in ro_df.iterrows():
                     farm_id = str(row.get('farm number', ''))
@@ -2313,7 +2352,7 @@ def main():
                                 farm_locations[farm_id] = {'lats': [], 'lons': []}
                             farm_locations[farm_id]['lats'].append(lat)
                             farm_locations[farm_id]['lons'].append(lon)
-            
+
             if farm_locations:
                 farm_centroids = {}
                 for farm_id, coords_data in farm_locations.items():
@@ -2321,12 +2360,12 @@ def main():
                         'lat': np.mean(coords_data['lats']),
                         'lon': np.mean(coords_data['lons'])
                     }
-                
+
                 st.session_state.farm_centroids_rainfall = farm_centroids
-                
+
                 st.divider()
                 st.markdown("### Farm Rainfall Time Series")
-                
+
                 farm_ids = sorted(farm_centroids.keys())
                 selected_farms = st.multiselect(
                     "Select Farms",
@@ -2334,45 +2373,45 @@ def main():
                     default=farm_ids[:3] if len(farm_ids) >= 3 else farm_ids,
                     key="rainfall_farm_select"
                 )
-                
+
                 if selected_farms:
                     time_series_data = []
-                    
+
                     for _, obs_row in rainfall_df.iterrows():
                         obs_lat = obs_row['lat']
                         obs_lon = obs_row['lon']
                         obs_rainfall = obs_row['rainfall']
                         obs_datetime = obs_row['date time']
-                        
+
                         for farm_id in selected_farms:
                             if farm_id in farm_centroids:
                                 centroid = farm_centroids[farm_id]
                                 distance = np.sqrt((obs_lon - centroid['lon'])**2 + 
                                                    (obs_lat - centroid['lat'])**2)
-                                
+
                                 weight = 1 / (distance + 0.0001)**2
-                                
+
                                 time_series_data.append({
                                     'DateTime': obs_datetime,
                                     'Farm': farm_id,
                                     'Rainfall (mm)': obs_rainfall,
                                     'Weight': weight
                                 })
-                    
+
                     if time_series_data:
                         ts_df = pd.DataFrame(time_series_data)
-                        
+
                         def weighted_avg(group):
                             return np.sum(group['Rainfall (mm)'] * group['Weight']) / np.sum(group['Weight'])
-                        
+
                         ts_agg = ts_df.groupby(['DateTime', 'Farm']).apply(weighted_avg).reset_index(name='Rainfall (mm)')
-                        
+
                         plt.style.use('seaborn-v0_8-whitegrid')
                         fig, ax = plt.subplots(figsize=(14, 6), dpi=120)
-                        
+
                         colors = ['#2E86AB', '#A23B72', '#F18F01', '#C73E1D', '#3B1F2B', 
                                   '#6B4226', '#1B998B', '#FF6B6B', '#4ECDC4', '#45B7D1']
-                        
+
                         for idx, farm_id in enumerate(selected_farms):
                             farm_data = ts_agg[ts_agg['Farm'] == farm_id].sort_values('DateTime')
                             color = colors[idx % len(colors)]
@@ -2380,51 +2419,51 @@ def main():
                                    marker='o', label=f'Farm {farm_id}', linewidth=2.5, 
                                    markersize=6, alpha=0.85, color=color,
                                    markeredgecolor='white', markeredgewidth=0.5)
-                        
+
                         ax.set_xlabel('Date/Time', fontsize=12, fontweight='medium', labelpad=10)
                         ax.set_ylabel('Rainfall (mm)', fontsize=12, fontweight='medium', labelpad=10)
                         ax.set_title('Farm Rainfall Time Series', fontsize=14, fontweight='bold', pad=15)
-                        
+
                         ax.legend(loc='upper right', frameon=True, fancybox=True, 
                                  shadow=True, fontsize=10, framealpha=0.95)
-                        
+
                         ax.grid(True, alpha=0.4, linestyle='--', linewidth=0.7)
                         ax.set_facecolor('#FAFAFA')
                         fig.patch.set_facecolor('white')
-                        
+
                         ax.spines['top'].set_visible(False)
                         ax.spines['right'].set_visible(False)
                         ax.spines['left'].set_linewidth(1.2)
                         ax.spines['bottom'].set_linewidth(1.2)
-                        
+
                         plt.xticks(rotation=45, ha='right', fontsize=10)
                         plt.yticks(fontsize=10)
                         plt.tight_layout()
-                        
+
                         st.pyplot(fig)
                         plt.close(fig)
                         plt.style.use('default')
-            
+
             st.divider()
             st.markdown("### Daily Rainfall Analysis")
-            
+
             available_dates = sorted(rainfall_df['date'].unique())
             date_options = [d.strftime('%Y-%m-%d') for d in available_dates]
-            
+
             selected_date_str = st.selectbox(
                 "Select Day",
                 date_options,
                 key="rainfall_day_select"
             )
-            
+
             if selected_date_str:
                 from datetime import datetime
                 selected_date = datetime.strptime(selected_date_str, '%Y-%m-%d').date()
                 st.session_state.rainfall_selected_day = selected_date
-                
+
                 day_data = rainfall_df[rainfall_df['date'] == selected_date]
                 daily_by_location = day_data.groupby(['lat', 'lon']).agg({'rainfall': 'sum'}).reset_index()
-                
+
                 if len(daily_by_location) >= 3:
                     rainfall_classes = [
                         (5, "Light (< 5 mm)"),
@@ -2433,12 +2472,12 @@ def main():
                         (50, "Very Heavy (30-50 mm)"),
                         (200, "Extreme (> 50 mm)")
                     ]
-                    
+
                     current_border = st.session_state.get('custom_border', None)
-                    
+
                     coords = daily_by_location[['lon', 'lat']].values
                     values = daily_by_location['rainfall'].values
-                    
+
                     with st.spinner("Generating rainfall map..."):
                         rainfall_map_buf, diagnostics = create_geopandas_classification_map(
                             None, None, 
@@ -2449,7 +2488,7 @@ def main():
                             border=current_border,
                             external_data={'coords': coords, 'values': values}
                         )
-                    
+
                     if rainfall_map_buf:
                         st.session_state.rainfall_map_buffer = rainfall_map_buf
                         st.image(rainfall_map_buf, caption=f"Rainfall Distribution - {selected_date_str}", use_container_width=True)
@@ -2472,14 +2511,14 @@ def main():
         if ro_df is not None and len(ro_df) > 0:
             st.markdown("### RO Units Data")
             st.dataframe(ro_df, use_container_width=True)
-        
+
         rainfall_df = st.session_state.get('rainfall_df', None)
         if rainfall_df is not None and len(rainfall_df) > 0:
             st.divider()
             st.markdown("### Farm Rainfall Summary")
-            
+
             farm_centroids = st.session_state.get('farm_centroids_rainfall', None)
-            
+
             if farm_centroids is None:
                 farm_locations = {}
                 if wells_df is not None and len(wells_df) > 0:
@@ -2492,7 +2531,7 @@ def main():
                                     farm_locations[farm_id] = {'lats': [], 'lons': []}
                                 farm_locations[farm_id]['lats'].append(lat)
                                 farm_locations[farm_id]['lons'].append(lon)
-                
+
                 if ro_df is not None and len(ro_df) > 0:
                     for _, row in ro_df.iterrows():
                         farm_id = str(row.get('farm number', ''))
@@ -2503,7 +2542,7 @@ def main():
                                     farm_locations[farm_id] = {'lats': [], 'lons': []}
                                 farm_locations[farm_id]['lats'].append(lat)
                                 farm_locations[farm_id]['lons'].append(lon)
-                
+
                 if farm_locations:
                     farm_centroids = {}
                     for farm_id, coords_data in farm_locations.items():
@@ -2511,38 +2550,38 @@ def main():
                             'lat': np.mean(coords_data['lats']),
                             'lon': np.mean(coords_data['lons'])
                         }
-            
+
             if farm_centroids:
                 available_dates = sorted(rainfall_df['date'].unique())
                 farm_daily_rainfall = []
-                
+
                 for farm_id, centroid in farm_centroids.items():
                     farm_row = {'Farm Number': farm_id}
-                    
+
                     for date in available_dates:
                         day_data = rainfall_df[rainfall_df['date'] == date]
                         daily_by_loc = day_data.groupby(['lat', 'lon']).agg({'rainfall': 'sum'}).reset_index()
                         rain_coords = daily_by_loc[['lon', 'lat']].values
                         rain_values = daily_by_loc['rainfall'].values
-                        
+
                         if len(rain_coords) > 0:
                             distances = np.sqrt((rain_coords[:, 0] - centroid['lon'])**2 + 
                                                (rain_coords[:, 1] - centroid['lat'])**2)
-                            
+
                             if len(distances) >= 3:
                                 weights = 1 / (distances + 0.0001)**2
                                 interpolated_rainfall = np.sum(weights * rain_values) / np.sum(weights)
                             else:
                                 interpolated_rainfall = rain_values[np.argmin(distances)]
-                            
+
                             date_str = date.strftime('%Y-%m-%d')
                             farm_row[date_str] = round(interpolated_rainfall, 2)
                         else:
                             date_str = date.strftime('%Y-%m-%d')
                             farm_row[date_str] = 0.0
-                    
+
                     farm_daily_rainfall.append(farm_row)
-                
+
                 if farm_daily_rainfall:
                     farm_rain_df = pd.DataFrame(farm_daily_rainfall)
                     farm_rain_df = farm_rain_df.sort_values('Farm Number')
